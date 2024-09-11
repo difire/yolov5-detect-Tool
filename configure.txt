@@ -1,0 +1,1 @@
+weights/yolov5s.pt 640 0.7 0.45 100 0

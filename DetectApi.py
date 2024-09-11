@@ -1,0 +1,148 @@
+# 导入需要的库
+import os
+import sys
+from pathlib import Path
+import numpy as np
+import cv2
+import torch
+import torch.backends.cudnn as cudnn
+
+# 初始化目录
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[0]  # 定义YOLOv5的根目录
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))  # 将YOLOv5的根目录添加到环境变量中（程序结束后删除）
+ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
+
+from models.common import DetectMultiBackend
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
+from utils.general import (LOGGER, Profile, check_file, check_img_size, check_imshow, check_requirements, colorstr, cv2,
+                           increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
+from utils.plots import Annotator, colors, save_one_box
+from utils.torch_utils import select_device, time_sync
+
+# 导入letterbox
+from utils.augmentations import Albumentations, augment_hsv, copy_paste, letterbox, mixup, random_perspective
+
+class DETECT_API:
+    def __init__(self,weight,imgsz=640,conf_thres=0.25,iou_thres=0.45,max_det=1000,device_='0'):
+        self.weights = weight  # 权重文件地址   .pt文件
+        # source = ROOT / 'data/images'  # 测试数据文件(图片或视频)的保存路径
+        self.data = ''  # 标签文件地址   .yaml文件
+
+        self.imgsz = (imgsz, imgsz)  # 输入图片的大小 默认640(pixels)
+        self.conf_thres = conf_thres  # object置信度阈值 默认0.25  用在nms中
+        self.iou_thres = iou_thres  # 做nms的iou阈值 默认0.45   用在nms中
+        self.max_det = max_det  # 每张图片最多的目标数量  用在nms中
+        device = device_ if torch.cuda.is_available() else'cpu'  # 设置代码执行的设备 cuda device, i.e. 0 or 0,1,2,3 or cpu
+        self.classes = None  # 在nms中是否是只保留某些特定的类 默认是None 就是所有类只要满足条件都可以保留 --class 0, or --class 0 2 3
+        self.agnostic_nms = False  # 进行nms是否也除去不同类别之间的框 默认False
+        self.augment = False  # 预测是否也要采用数据增强 TTA 默认False
+        self.visualize = False  # 特征图可视化 默认FALSE
+        self.half = False  # 是否使用半精度 Float16 推理 可以缩短推理时间 但是默认是False
+        self.dnn = False  # 使用OpenCV DNN进行ONNX推理
+
+        # 获取设备
+        self.device = select_device(device)
+
+        # 载入模型
+        self.model = DetectMultiBackend(self.weights, device=self.device, dnn=self.dnn, data=self.data)
+        self.stride, self.names, self.pt, self.jit, self.onnx, self.engine = self.model.stride, self.model.names, self.model.pt, self.model.jit, self.model.onnx, self.model.engine
+        self.imgsz = check_img_size(self.imgsz, s=self.stride)  # 检查图片尺寸
+
+        # Half
+        # 使用半精度 Float16 推理
+        self.half &= (self.pt or self.jit or self.onnx or self.engine) and self.device.type != 'cpu'  # FP16 supported on limited backends with CUDA
+        if self.pt or self.jit:
+            self.model.model.half() if self.half else self.model.model.float()
+
+
+    def detect(self,img):
+        # Dataloader
+        # 载入数据
+        # dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
+
+        # Run inference
+        # 开始预测
+        self.model.warmup(imgsz=(1, 3, *self.imgsz))  # warmup
+        dt, seen = [0.0, 0.0, 0.0], 0
+
+        # 对图片进行处理
+        im0 = img
+        # Padded resize
+        im = letterbox(im0, self.imgsz, self.stride, auto=self.pt)[0]
+        # Convert
+        im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        im = np.ascontiguousarray(im)
+        t1 = time_sync()
+        im = torch.from_numpy(im).to(self.device)
+        im = im.half() if self.half else im.float()  # uint8 to fp16/32
+        im /= 255  # 0 - 255 to 0.0 - 1.0
+        if len(im.shape) == 3:
+            im = im[None]  # expand for batch dim
+        t2 = time_sync()
+        dt[0] += t2 - t1
+
+        # Inference
+        # 预测
+        pred = self.model(im, augment=self.augment, visualize=self.visualize)
+        t3 = time_sync()
+        dt[1] += t3 - t2
+
+        # NMS
+        pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, self.classes, self.agnostic_nms, max_det=self.max_det)
+        dt[2] += time_sync() - t3
+
+        # 用于存放结果
+        detections = []
+
+        # Process predictions
+        for i, det in enumerate(pred):  # per image 每张图片
+            seen += 1
+            # im0 = im0s.copy()
+            if len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
+                # Write results
+                # 写入结果
+                for *xyxy, conf, cls in reversed(det):
+                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4))).view(-1).tolist()
+                    xywh = [round(x) for x in xywh]
+                    xywh = [xywh[0] - xywh[2] // 2, xywh[1] - xywh[3] // 2, xywh[2],
+                            xywh[3]]  # 检测到目标位置，格式：（left，top，w，h）
+
+                    cls = self.names[int(cls)]
+                    conf = float(conf)
+                    detections.append({'class': cls, 'conf': conf, 'position': xywh})
+        # 输出结果
+        for i in detections:
+            print(i)
+        #     x,y,w,h=i['position']
+        #     img=cv2.rectangle(img, (x, y), (x + w, y + h), (0,0,255), 3)
+        #     img=cv2.putText(img,str(round(i['conf'],4)), (x , y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255),1, cv2.LINE_AA)
+        #
+        # cv2.imshow('img',img)
+        # cv2.waitKey(0)
+
+        # 推测的时间
+        LOGGER.info(f'({t3 - t2:.3f}s)')
+        return detections
+
+if __name__=='__main__':
+    #初始化模型
+    Detect=DETECT_API('weights/yolov5s.pt')
+
+    path = 'zhuitong_1.jpeg'
+    img = cv2.imread(path)
+    # 传入一张图片
+    detections=Detect.detect(img)
+    # print(detections)
+    for i in detections:
+        # print(i)
+        x, y, w, h = i['position']
+        img = cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 3)
+        img = cv2.putText(img, "{} {}".format(i['class'],round(i['conf'], 4)), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1,
+                          cv2.LINE_AA)
+
+    cv2.imshow('img', img)
+    cv2.waitKey(0)

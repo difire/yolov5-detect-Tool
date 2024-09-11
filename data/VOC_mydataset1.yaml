@@ -1,0 +1,29 @@
+path: C:/TOOL/PythonPrograms/MachineLearning/yolov5-7.0/yolov5-7.0/dataset/mydataset1
+train: images/train
+val: images/val
+test: images/test
+
+# Classes
+names:
+  0: dog
+  1: person
+  2: train
+  3: sofa
+  4: chair
+  5: car
+  6: pottedplant
+  7: diningtable
+  8: horse
+  9: cat
+  10: cow
+  11: bus
+  12: bicycle
+  13: motorbike
+  14: bird
+  15: tvmonitor
+  16: sheep
+  17: aeroplane
+  18: boat
+  19: bottle
+
+nc : 20

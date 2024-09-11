@@ -1,0 +1,9 @@
+path: C:/TOOL/PythonPrograms/MachineLearning/yolov5-7.0/yolov5-7.0/dataset/random_data_batch_1
+train: images/train
+val: images/val
+test:
+
+# Classes
+names: ['airplane','automobile','bird','cat','deer','dog','frog','horse','ship','truck']
+
+nc : 10
